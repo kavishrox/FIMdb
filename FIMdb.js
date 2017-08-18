@@ -1,7 +1,7 @@
 var uuid = require('node-uuid');
 var Promise = require('bluebird');
 //fast in memory database
-var logger, config, defaults, fbUtils;
+var logger, fbUtils;
 
 var tableConfig = {};
 var tables = {};
@@ -10,8 +10,6 @@ var reverseTables = {};
 function parseConfig(options) {
   fbUtils = options.fbUtils;
   logger = options.logger;
-  config = options.config;
-  defaults = options.defaults;
 }
 
 function parseTableConfig(data) {
@@ -156,29 +154,27 @@ module.exports = {
   fetch: function(options) {
     var table = options.table;
     var key = options.key;
-    return new Promise(function(resolve, reject) {
-      if(tables[table]) {
-        var curr = tables[table];
-        for(var idx=0; idx<key.length; idx++) {
-          if(curr[key[idx]]) {
-            curr = curr[key[idx]];
-          } else {
-            curr = undefined;
-            break;
-          }
+    if(tables[table]) {
+      var curr = tables[table];
+      for(var idx=0; idx<key.length; idx++) {
+        if(curr[key[idx]]) {
+          curr = curr[key[idx]];
+        } else {
+          curr = undefined;
+          break;
         }
-        resolve({
-          code :"200",
-          message: "Value returned",
-          data: curr
-        });
-      } else {
-        reject({
-          code : "400",
-          error: "Table doesnt exist"
-        });
       }
-    });
+      return {
+        code :"200",
+        message: "Value returned",
+        data: curr
+      };
+    } else {
+      return {
+        code : "400",
+        error: "Table doesnt exist"
+      };
+    }
   },
   
   store: function(options) {
