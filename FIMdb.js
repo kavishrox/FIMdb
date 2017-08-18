@@ -5,6 +5,7 @@ var logger, config, defaults, fbUtils;
 
 var tableConfig = {};
 var tables = {};
+var reverseTables = {};
 
 function parseConfig(options) {
   fbUtils = options.fbUtils;
@@ -16,6 +17,47 @@ function parseConfig(options) {
 function parseTableConfig(data) {
   for(var name in data) {
     tableConfig[name] = data[name];
+    createReverseTables({
+      id: tableConfig[name].id,
+      fields: tableConfig[name].fields,
+      name: name
+    });
+  }
+}
+
+function createReverseTables(options) {
+  var id = options.id;
+  var fields = options.fields;
+  var name = options.name;
+  return new Promise(function(resolve, reject) {
+    for(var field in fields) {
+      if(fields[field].isPrimary) {
+        //create reverse entry
+        tableConfig[field] = {
+          id: uuid.v4(),
+          referenceId: id,
+          referenceName: name
+        };
+        tables[field] = {};
+      }
+    }
+  });
+}
+
+function parseReverseTables(options) {
+  var data = options.data;
+  var name = options.name;
+  for(var key in data) {
+    for(var subkey in data[key]) {
+      if(tableConfig[name].fields[subkey].isPrimary) {
+        if(!tables[subkey][data[key][subkey]]) {
+          tables[subkey][data[key][subkey]] = {};
+        }
+        tables[subkey][data[key][subkey]][key] = {
+          status: true
+        };
+      }
+    }
   }
 }
 
@@ -23,6 +65,10 @@ function parseTables(data) {
   for(var name in data) {
     if(tableConfig[name] && tableConfig[name].isPersistent) {
       tables[name] = data[name];
+      parseReverseTables({
+        name: name,
+        data: tables[name]
+      });
     } else {
       //remove this data --- later date
     }
@@ -87,6 +133,11 @@ module.exports = {
             fields : fields
           };
           tables[table] = {};
+          createReverseTables({
+            id: tableId,
+            fields: fields,
+            name: name
+          });
           resolve({
             code : "200",
             message: "Table created",
@@ -142,6 +193,16 @@ module.exports = {
 
         };
         data[key] = value;
+        for(var key in value) {
+          if(tableConfig[table].fields[key].isPrimary) {
+            if(!tables[key][value]) {
+              tables[key][value] = {};
+            }
+            tables[key][value][table] = {
+              status: true
+            };
+          }
+        }
         fbUtils.update({
           base: "fbFimStore",
           path: "/"+table,
@@ -172,7 +233,29 @@ module.exports = {
     return new Promise(function(resolve, reject) {
       if(tables[table]) {
         if(tables[table].key) {
+          for(var field in tableConfig[table].fields) {
+            if(tableConfig[table].fields[field].isPrimary) {
+              if(tables[field] && tables[field][tables[key][field]] && tables[field][tables[key][field]][table]) {
+                delete tables[field][tables[key][field]][table];
+                if(Objects.keys(tables[field][tables[key][field]]).length === 0) {
+                  delete tables[field][tables[key][field]];
+                }
+              }
+            }
+          }
           delete tables[table].key;
+          var dataToDelete = {};
+          dataToDelete[key] = null;
+          fbUtils.update({
+            base: "fbFimStore",
+            path: "/"+table,
+            data: dataToDelete
+          }).then(function(response) {
+            resolve(response);
+          }, function(error) {
+            //removed from the local anyways
+            reject(error);
+          });
         }
       } else {
         reject({
