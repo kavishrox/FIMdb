@@ -14,6 +14,7 @@ function parseConfig(options) {
 function parseTableConfig(data) {
   for(var name in data) {
     tableConfig[name] = data[name];
+    tables[name] = {};
     createReverseTables({
       id: tableConfig[name].id,
       fields: tableConfig[name].fields,
@@ -241,7 +242,7 @@ module.exports = {
                   //removed from the local anyways
                   // reject(error);
                 });
-                if(Objects.keys(tables[field][tables[table][key][field]]).length === 0) {
+                if(Object.keys(tables[field][tables[table][key][field]]).length === 0) {
                   delete tables[field][tables[table][key][field]];
                 }
               }
