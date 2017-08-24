@@ -59,9 +59,7 @@ function parseReverseTables(options) {
         if(!tables[subkey][data[key][subkey]]) {
           tables[subkey][data[key][subkey]] = {};
         }
-        tables[subkey][data[key][subkey]][key] = {
-          status: true
-        };
+        tables[subkey][data[key][subkey]][name] = key;
       }
     }
   }
@@ -88,7 +86,7 @@ module.exports = {
     if(!fbUtils) {
       parseConfig(options);
     }
-    return new Promise(function(resolve, reject) {
+    return new Promise(function(resolve) {
       fbUtils.fetch({
         base: "fbFimConfig",
         path: "/"
@@ -99,15 +97,14 @@ module.exports = {
           path: "/"
         }).then(function(response) {
           parseTables(response.data);
-          resolve({
-            code : "200",
-            message: "db initialized"
-          });
+          resolve();
         }, function(error) {
-          reject(error);
+          logger.error(error);
+          resolve();
         });
       }, function(error) {
-        reject(error);
+        logger.error(error);
+        resolve();
       });
     });
   },
@@ -186,8 +183,8 @@ module.exports = {
     var value = options.value;
     return new Promise(function(resolve, reject) {
       if(tables[table]) {
-        var oldValue = tables[table].key;
-        tables[table].key = value;
+        var oldValue = tables[table][key];
+        tables[table][key] = value;
         var data = {
 
         };
@@ -197,9 +194,7 @@ module.exports = {
             if(!tables[k][value[k]]) {
               tables[k][value[k]] = {};
             }
-            tables[key][value[k]][table] = {
-              status: true
-            };
+            tables[k][value[k]][table] = key;
           }
         }
         fbUtils.update({
@@ -211,9 +206,9 @@ module.exports = {
         }, function(error) {
           //remove the local data
           if(oldValue) {
-            tables[table].key = oldValue;
+            tables[table][key] = oldValue;
           } else {
-            delete tables[table].key;
+            delete tables[table][key];
           }
           reject(error);
         });
@@ -231,29 +226,42 @@ module.exports = {
     var key = options.key;
     return new Promise(function(resolve, reject) {
       if(tables[table]) {
-        if(tables[table].key) {
+        if(tables[table][key]) {
           for(var field in tableConfig[table].fields) {
             if(tableConfig[table].fields[field].isPrimary) {
-              if(tables[field] && tables[field][tables[key][field]] && tables[field][tables[key][field]][table]) {
-                delete tables[field][tables[key][field]][table];
-                if(Objects.keys(tables[field][tables[key][field]]).length === 0) {
-                  delete tables[field][tables[key][field]];
+              if(tables[field] && tables[field][tables[table][key][field]] && tables[field][tables[table][key][field]][table]) {
+                delete tables[field][tables[table][key][field]][table];
+                fbUtils.set({
+                  base: "fbFimStore",
+                  path: "/"+field+"/"+tables[table][key][field],
+                  data: null
+                }).then(function() {
+                  // resolve(response);
+                }, function() {
+                  //removed from the local anyways
+                  // reject(error);
+                });
+                if(Objects.keys(tables[field][tables[table][key][field]]).length === 0) {
+                  delete tables[field][tables[table][key][field]];
                 }
               }
             }
           }
-          delete tables[table].key;
-          var dataToDelete = {};
-          dataToDelete[key] = null;
-          fbUtils.update({
+          delete tables[table][key];
+          fbUtils.set({
             base: "fbFimStore",
-            path: "/"+table,
-            data: dataToDelete
+            path: "/"+table+"/"+key,
+            data: null
           }).then(function(response) {
             resolve(response);
           }, function(error) {
             //removed from the local anyways
             reject(error);
+          });
+        } else {
+          reject({
+            code: "400",
+            error: "No entry available for this key"
           });
         }
       } else {
