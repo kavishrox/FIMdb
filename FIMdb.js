@@ -5,7 +5,6 @@ var logger, fbUtils;
 
 var tableConfig = {};
 var tables = {};
-var reverseTables = {};
 
 function parseConfig(options) {
   fbUtils = options.fbUtils;
@@ -31,10 +30,19 @@ function createReverseTables(options) {
     for(var field in fields) {
       if(fields[field].isPrimary) {
         //create reverse entry
+        var newFields = {
+
+        };
+        newFields[name] = {
+          isPrimary: true
+        }
         tableConfig[field] = {
           id: uuid.v4(),
           referenceId: id,
-          referenceName: name
+          referenceName: name,
+          fields: newFields,
+          name: field,
+          path: null
         };
         tables[field] = {};
       }
@@ -117,7 +125,7 @@ module.exports = {
         });
       } else {
         fbUtils.update({
-          base: "fbFIMConfig",
+          base: "fbFimConfig",
           path: "/"+name,
           data: {
             id: tableId,
@@ -128,9 +136,11 @@ module.exports = {
           tableConfig[name] = {
             id: tableId,
             path: "/"+name,
-            fields : fields
+            fields: fields,
+            name: name,
+            isPersistent: isPersistent
           };
-          tables[table] = {};
+          tables[name] = {};
           createReverseTables({
             id: tableId,
             fields: fields,
@@ -164,16 +174,9 @@ module.exports = {
           break;
         }
       }
-      return {
-        code :"200",
-        message: "Value returned",
-        data: curr
-      };
+      return curr;
     } else {
-      return {
-        code : "400",
-        error: "Table doesnt exist"
-      };
+      return false;
     }
   },
   
@@ -189,12 +192,12 @@ module.exports = {
 
         };
         data[key] = value;
-        for(var key in value) {
-          if(tableConfig[table].fields[key].isPrimary) {
-            if(!tables[key][value]) {
-              tables[key][value] = {};
+        for(var k in value) {
+          if(tableConfig[table].fields[k].isPrimary) {
+            if(!tables[k][value[k]]) {
+              tables[k][value[k]] = {};
             }
-            tables[key][value][table] = {
+            tables[key][value[k]][table] = {
               status: true
             };
           }
