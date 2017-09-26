@@ -80,6 +80,48 @@ function parseTables(data) {
   }
 }
 
+function pushOnDataPresent(options) {
+  var table = options.table;
+  var data = options.data;
+  var key = options.key;
+  var value = options.value;
+  var isNotCached = options.isNotCached;
+  if(!isNotCached && tables[table]) {
+    for(var k in value) {
+      if(!tables[table][key]) {
+        tables[table][key] = {};
+      }
+      if(!data) {
+        data = {};
+      }
+      if(tableConfig[table].fields[k].isPrimary) {
+        if(!tables[k][value[k]]) {
+          tables[k][value[k]] = {};
+        }
+        tables[table][key][k] = value[k];
+        data[k] = value[k];
+        tables[k][value[k]][table] = key;
+      } else if(tableConfig[table].fields[k].isOrdered) {
+        if(!tables[table][key][k]) {
+          tables[table][key][k] = [];
+        } 
+        if(!data[k]) {
+          data[k] = [];
+        }
+        tables[table][key][k].push(value[k]);
+        data[k].push(value[k]);
+      } else {
+        tables[table][key]=value;
+        data = value;
+      }
+    }
+  }
+  return {
+    data: data,
+    table: table
+  };
+}
+
 module.exports = {
 
   init: function(options) {
@@ -110,11 +152,15 @@ module.exports = {
     });
   },
 
+
+  //DB APIs
+
   createTable: function(options) {
     var name = options.name;
     var fields = options.fields;
     var tableId = uuid.v4();
     var isPersistent = options.isPersistent || false;
+    var isNotCached = options.isNotCached || false;
     return new Promise(function(resolve, reject) {
       if(tableConfig[name]) {
         reject({
@@ -136,14 +182,17 @@ module.exports = {
             path: "/"+name,
             fields: fields,
             name: name,
-            isPersistent: isPersistent
+            isPersistent: isPersistent,
+            isNotCached: isNotCached
           };
-          tables[name] = {};
-          createReverseTables({
-            id: tableId,
-            fields: fields,
-            name: name
-          });
+          if(!isNotCached) {
+            tables[name] = {};
+            createReverseTables({
+              id: tableId,
+              fields: fields,
+              name: name
+            });
+          }
           resolve({
             code : "200",
             message: "Table created",
@@ -162,52 +211,87 @@ module.exports = {
   fetch: function(options) {
     var table = options.table;
     var key = options.key;
-    if(tables[table]) {
-      var curr = tables[table];
-      for(var idx=0; idx<key.length; idx++) {
-        if(curr[key[idx]]) {
-          curr = curr[key[idx]];
+    logger.debug("FIMdb fetch: ", table, key);
+    var curr, idx;
+    return new Promise(function(resolve, reject) {
+      if(tables[table]) {
+        curr = tables[table];
+        for(idx=0; idx<key.length; idx++) {
+          if(curr[key[idx]]) {
+            curr = curr[key[idx]];
+          } else {
+            curr = undefined;
+            break;
+          }
+        }
+        resolve(curr);
+      } else {
+        if(tableConfig[table] && tableConfig[table].isNotCached && key.length > 0) {
+          fbUtils.fetch({
+            base: "fbFimStore",
+            path: "/"+table+"/"+key[0]
+          }).then(function(response) {
+            var data = response.data;
+            curr = response.data;
+            for(idx=1; idx<key.length; idx++) {
+              if(curr[key[idx]]) {
+                curr = curr[key[idx]];
+              } else {
+                curr = undefined;
+                break;
+              }
+            }
+            resolve(curr);
+          });
         } else {
-          curr = undefined;
-          break;
+          resolve(false);
         }
       }
-      return curr;
-    } else {
-      return false;
-    }
+    });
   },
   
   store: function(options) {
     var table = options.table;
     var key = options.key;
     var value = options.value;
+    logger.debug("FIMdb store: ", table, key, value);
+    var data, parsedData;
     return new Promise(function(resolve, reject) {
-      if(tables[table]) {
-        var oldValue = tables[table][key];
-        tables[table][key] = value;
-        var data = {
-
-        };
-        data[key] = value;
-        for(var k in value) {
-          if(tableConfig[table].fields[k].isPrimary) {
-            if(!tables[k][value[k]]) {
-              tables[k][value[k]] = {};
-            }
-            tables[k][value[k]][table] = key;
-          }
+      if(tableConfig[table]) {
+        if(tableConfig[table].isNotCached) {
+          fbUtils.fetch({
+            base: "fbFimStore",
+            path: "/"+table+"/"+key
+          }).then(function(response) {
+            data = response.data;
+            parsedData = pushOnDataPresent({
+              data: data,
+              table: table,
+              key: key,
+              value, value,
+              isNotCached: true
+            });
+          });
+        } else {
+          data = tables[table] && tables[table][key] ? tables[table][key]: null;
+          parsedData = pushOnDataPresent({
+            data: data,
+            table: table,
+            key: key,
+            value: value,
+            isNotCached: false
+          });
         }
         fbUtils.update({
           base: "fbFimStore",
-          path: "/"+table,
-          data: data
+          path: "/"+table+"/"+key,
+          data: parsedData.data
         }).then(function(response) {
           resolve(response);
         }, function(error) {
           //remove the local data
-          if(oldValue) {
-            tables[table][key] = oldValue;
+          if(oldValue && !tableConfig[table].isNotCached) {
+            tables[table][key] = data;
           } else {
             delete tables[table][key];
           }
@@ -225,13 +309,15 @@ module.exports = {
   remove: function(options) {
     var table = options.table;
     var key = options.key;
+    logger.debug("FIMdb remove: ", table, key);
     return new Promise(function(resolve, reject) {
-      if(tables[table]) {
+      if(tableConfig[table]) {
         if(tables[table][key]) {
           for(var field in tableConfig[table].fields) {
             if(tableConfig[table].fields[field].isPrimary) {
               if(tables[field] && tables[field][tables[table][key][field]] && tables[field][tables[table][key][field]][table]) {
                 delete tables[field][tables[table][key][field]][table];
+                logger.debug("FIMdb remove: deleted intermediate ", field, tables[table][key][field], table);
                 fbUtils.set({
                   base: "fbFimStore",
                   path: "/"+field+"/"+tables[table][key][field],
@@ -249,22 +335,18 @@ module.exports = {
             }
           }
           delete tables[table][key];
-          fbUtils.set({
-            base: "fbFimStore",
-            path: "/"+table+"/"+key,
-            data: null
-          }).then(function(response) {
-            resolve(response);
-          }, function(error) {
-            //removed from the local anyways
-            reject(error);
-          });
-        } else {
-          reject({
-            code: "400",
-            error: "No entry available for this key"
-          });
+          logger.debug("FIMdb remove: deleted final ", table, key);
         }
+        fbUtils.set({
+          base: "fbFimStore",
+          path: "/"+table+"/"+key,
+          data: null
+        }).then(function(response) {
+          resolve(response);
+        }, function(error) {
+          //removed from the local anyways
+          reject(error);
+        });
       } else {
         reject({
           code : "400",
