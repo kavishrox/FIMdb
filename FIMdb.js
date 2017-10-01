@@ -14,12 +14,14 @@ function parseConfig(options) {
 function parseTableConfig(data) {
   for(var name in data) {
     tableConfig[name] = data[name];
-    tables[name] = {};
-    createReverseTables({
-      id: tableConfig[name].id,
-      fields: tableConfig[name].fields,
-      name: name
-    });
+    if(!tableConfig[name].isNotCached && tableConfig[name].isPersistent) {
+      tables[name] = {};
+      createReverseTables({
+        id: tableConfig[name].id,
+        fields: tableConfig[name].fields,
+        name: name
+      });
+    }
   }
 }
 
@@ -66,18 +68,9 @@ function parseReverseTables(options) {
   }
 }
 
-function parseTables(data) {
-  for(var name in data) {
-    if(tableConfig[name] && tableConfig[name].isPersistent) {
-      tables[name] = data[name];
-      parseReverseTables({
-        name: name,
-        data: tables[name]
-      });
-    } else {
-      //remove this data --- later date
-    }
-  }
+function parseTable(options) {
+  tables[options.name] = options.data;
+  parseReverseTables(options);
 }
 
 function pushOnDataPresent(options) {
@@ -115,11 +108,40 @@ function pushOnDataPresent(options) {
         data = value;
       }
     }
+  } else if(isNotCached) {
+    for(var k in value) {
+      if(!data) {
+        data = {};
+      }
+      if(tableConfig[table].fields[k].isOrdered) {
+        if(!data[k]) {
+          data[k] = [];
+        }
+        data[k].push(value[k]);
+      } else {
+        data = value;
+      }
+    }
   }
-  return {
-    data: data,
-    table: table
-  };
+  return data;
+}
+
+function fetchAndParseTable(name) {
+  return new Promise(function(resolve, reject) {
+    fbUtils.fetch({
+      base: "fbFimStore",
+      path: "/"+name
+    }).then(function(response) {
+      parseTable({
+        name: name,
+        data: response.data
+      });
+      resolve();
+    }, function(error) {
+      logger.error(error);
+      resolve();
+    });
+  });
 }
 
 module.exports = {
@@ -135,14 +157,13 @@ module.exports = {
         path: "/"
       }).then(function(response) {
         parseTableConfig(response.data);
-        fbUtils.fetch({
-          base: "fbFimStore",
-          path: "/"
-        }).then(function(response) {
-          parseTables(response.data);
-          resolve();
-        }, function(error) {
-          logger.error(error);
+        var funcCalls = [];
+        for(var name in tableConfig) {
+          if(tableConfig[name] && !tableConfig[name].isNotCached && tableConfig[name].isPersistent) {
+            funcCalls.push(fetchAndParseTable(name));
+          }
+        }
+        Promise.all(funcCalls).then(function() {
           resolve();
         });
       }, function(error) {
@@ -174,6 +195,7 @@ module.exports = {
           data: {
             id: tableId,
             isPersistent: isPersistent,
+            isNotCached: isNotCached,
             fields: fields
           }
         }).then(function(response) {
@@ -185,6 +207,7 @@ module.exports = {
             isPersistent: isPersistent,
             isNotCached: isNotCached
           };
+          //local copy only if caching allowed
           if(!isNotCached) {
             tables[name] = {};
             createReverseTables({
@@ -213,20 +236,20 @@ module.exports = {
     var key = options.key;
     logger.debug("FIMdb fetch: ", table, key);
     var curr, idx;
-    return new Promise(function(resolve, reject) {
-      if(tables[table]) {
-        curr = tables[table];
-        for(idx=0; idx<key.length; idx++) {
-          if(curr[key[idx]]) {
-            curr = curr[key[idx]];
-          } else {
-            curr = undefined;
-            break;
-          }
+    if(tables[table]) {
+      curr = tables[table];
+      for(idx=0; idx<key.length; idx++) {
+        if(curr[key[idx]]) {
+          curr = curr[key[idx]];
+        } else {
+          curr = undefined;
+          break;
         }
-        resolve(curr);
-      } else {
-        if(tableConfig[table] && tableConfig[table].isNotCached && key.length > 0) {
+      }
+      return curr;
+    } else {
+      if(tableConfig[table] && tableConfig[table].isNotCached && key.length > 0) {
+        return new Promise(function(resolve, reject) {
           fbUtils.fetch({
             base: "fbFimStore",
             path: "/"+table+"/"+key[0]
@@ -242,12 +265,14 @@ module.exports = {
               }
             }
             resolve(curr);
+          }, function(error) {
+            resolve(null);
           });
-        } else {
-          resolve(false);
-        }
+        });
+      } else {
+        return false;
       }
-    });
+    }
   },
   
   store: function(options) {
@@ -271,6 +296,38 @@ module.exports = {
               value, value,
               isNotCached: true
             });
+            fbUtils.update({
+              base: "fbFimStore",
+              path: "/"+table+"/"+key,
+              data: parsedData
+            }).then(function(response) {
+              resolve(response);
+            }, function(error) {
+              //remove the local data
+              if(data && !tableConfig[table].isNotCached) {
+                tables[table][key] = data;
+              } else {
+                delete tables[table][key];
+              }
+              reject(error);
+            });
+          }, function(error) {
+            parsedData = pushOnDataPresent({
+              data: null,
+              table: table,
+              key: key,
+              value, value,
+              isNotCached: true
+            });
+            fbUtils.update({
+              base: "fbFimStore",
+              path: "/"+table+"/"+key,
+              data: parsedData
+            }).then(function(response) {
+              resolve(response);
+            }, function(error) {
+              reject(error);
+            });
           });
         } else {
           data = tables[table] && tables[table][key] ? tables[table][key]: null;
@@ -281,22 +338,22 @@ module.exports = {
             value: value,
             isNotCached: false
           });
+          fbUtils.update({
+            base: "fbFimStore",
+            path: "/"+table+"/"+key,
+            data: parsedData
+          }).then(function(response) {
+            resolve(response);
+          }, function(error) {
+            //remove the local data
+            if(oldValue && !tableConfig[table].isNotCached) {
+              tables[table][key] = data;
+            } else {
+              delete tables[table][key];
+            }
+            reject(error);
+          });
         }
-        fbUtils.update({
-          base: "fbFimStore",
-          path: "/"+table+"/"+key,
-          data: parsedData.data
-        }).then(function(response) {
-          resolve(response);
-        }, function(error) {
-          //remove the local data
-          if(oldValue && !tableConfig[table].isNotCached) {
-            tables[table][key] = data;
-          } else {
-            delete tables[table][key];
-          }
-          reject(error);
-        });
       } else {
         reject({
           code: "400",
@@ -312,7 +369,7 @@ module.exports = {
     logger.debug("FIMdb remove: ", table, key);
     return new Promise(function(resolve, reject) {
       if(tableConfig[table]) {
-        if(tables[table][key]) {
+        if(tables[table] && tables[table][key]) {
           for(var field in tableConfig[table].fields) {
             if(tableConfig[table].fields[field].isPrimary) {
               if(tables[field] && tables[field][tables[table][key][field]] && tables[field][tables[table][key][field]][table]) {
